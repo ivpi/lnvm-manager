@@ -18,11 +18,14 @@ You need to use the new LightNVM version, available in the kernel (install this 
 <https://github.com/OpenChannelSSD/linux/tree/liblnvm>
 
 Then, install 'liblightnvm':
+
 <https://github.com/OpenChannelSSD/liblightnvm>
 
 Now, clone the repository:
+```
 $ git clone git@github.com:ivpi/lnvm-manager.git
 $ make
+```
 
 You need root privilegies in order to manage LightNVM devices.
 
