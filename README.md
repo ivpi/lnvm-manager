@@ -2,9 +2,11 @@
 A tool to manage LightNVM-enable devices, such as OpenChannel SSDs.
 
 This software is based on 'lnvm' by Matias Bjørling:
+
 <https://github.com/OpenChannelSSD/lnvm>
 
 The previous version of 'lnvm' has been developed to manage the devices using ioctl directly. The linux kernel has been modified in order to work with 'liblightnvm', a user-space library to access OpenChannel SSDs:
+
 <https://github.com/OpenChannelSSD/liblightnvm>
 
 This new version of 'lnvm' uses 'liblightnvm' and the new version of the kernel. The main difference in the new LightNVM is that now is possible to access device LUNs in parallel (get and put blocks from different Logical Units).
@@ -12,6 +14,7 @@ This new version of 'lnvm' uses 'liblightnvm' and the new version of the kernel.
 # How to use
 
 You need to use the new LightNVM version, available in the kernel (install this kernel):
+
 <https://github.com/OpenChannelSSD/linux/tree/liblnvm>
 
 Then, install 'liblightnvm':
@@ -23,25 +26,30 @@ $ make
 
 You need root privilegies in order to manage LightNVM devices.
 
+```
 Available commands:
    tgt     Show registered lightNVM targets
    dev     Show registered lightNVM devices
    new     Init a target on top of a device
    rm      Remove a target from a device
+```
 
 # lnvm tgt
 
 Example:
+```
   $ sudo ./lnvm tgt
 
   ### LNVM TARGET TYPES ###
     LightNVM version (1, 0, 0). 2 target type(s) registered.
       Type: dflash (0, 0, 0)
       Type: rrpc (1, 0, 0)
-      
+```
+
 # lnvm dev
 
 Example:
+```
   $ sudo ./lnvm dev
   
   ### LNVM DEVICES ###
@@ -56,25 +64,30 @@ Example:
     Plane mode: 2
     max_sec_io: 64
     oob_size: 0
+```
 
 # lnvm new
 
+```
  Options:
   -d, --device=DEVICE        LightNVM device e.g. nvme0n1
   -l, --luns=LUNS            LUNs e.g. 0:3
   -n, --tgtname=TGTNAME      Target name e.g. mydev
   -t, --tgttype=TGTTYPE      Target type e.g. dflash
+```
 
 Example:
+```
   $ sudo ./lnvm new -d nvme0n1 -t dflash -n mydev -l 0:3
 
   ### LNVM CREATE TARGET ###
     LNVM Target created succesfully. Device: nvme0n1, target: dflash, file: /dev/mydev
+```
 
 Look to /dev and you can see /dev/nvme0n1 device file.
 
 # lnvm rm
-
+```
  Options:
   -n, --tgtname=TGTNAME      Target name e.g. mydev
   
@@ -84,4 +97,4 @@ Examples:
   
   ### LNVM REMOVE TARGET ###
     LNVM Target removed succesfully. file: /dev/mydev
-  
+```
