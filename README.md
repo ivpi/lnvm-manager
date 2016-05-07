@@ -31,17 +31,18 @@ You need root privilegies in order to manage LightNVM devices.
 
 ```
 Available commands:
-   tgt     Show registered lightNVM targets
+   info    Show registered lightNVM target types
    dev     Show registered lightNVM devices
    new     Init a target on top of a device
    rm      Remove a target from a device
+   tgt     Show info about an online target (created by 'new' command)
 ```
 
-# lnvm tgt
+# lnvm info
 
 Example:
 ```
-  $ sudo ./lnvm tgt
+  $ sudo ./lnvm info
 
   ### LNVM TARGET TYPES ###
     LightNVM version (1, 0, 0). 2 target type(s) registered.
@@ -95,9 +96,24 @@ Look to /dev and you can see /dev/nvme0n1 device file.
   -n, --tgtname=TGTNAME      Target name e.g. mydev
   
 Examples:
-  $ lnvm rm -n tgt0
-  $ lnvm rm tgt0
+  $ lnvm rm -n mydev
+  $ lnvm rm mydev
   
   ### LNVM REMOVE TARGET ###
     LNVM Target removed succesfully. file: /dev/mydev
+```
+
+# lnvm tgt
+```
+ Options:
+  -n, --tgtname=TGTNAME      Target name e.g. mydev
+
+ Examples:
+  $ lnvm tgt -n mydev
+  $ lnvm tgt mydev
+
+  ### LNVM TARGET INFO ###
+   Target File: /dev/mydev
+   Target Type: dflash (0,0,0)
+   Device: nvme0n1
 ```

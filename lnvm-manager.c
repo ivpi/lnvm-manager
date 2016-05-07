@@ -11,24 +11,28 @@
 #include <liblightnvm.h>
 
 enum cmdtypes {
-    LNVM_TGT = 1,
+    LNVM_INFO = 1,
     LNVM_DEV,
     LNVM_NEW,
-    LNVM_RM
+    LNVM_RM,
+    LNVM_TGT
 };
 
 struct arguments
 {
+    /* GLOBAL */
     int cmdtype;
     int arg_num;   
- 
+    /* CMD NEW */
     char *new_tgt;
     char *new_dev;
     char *new_name;
     int lun_begin;
     int lun_end;
-
+    /* CMD RM */
     char *rm_name;
+    /* CMD TGT */
+    char *tgt_name;
 };
 
 const char *argp_program_version = "lnvm-manager 1.0";
@@ -146,14 +150,65 @@ static struct argp argp_rm = { opt_rm, parse_opt_rm, 0, doc_rm};
 
 /* END CMD RM */
 
+/* CMD TGT INFO */
+
+static struct argp_option opt_tgt[] = {
+    {"tgtname", 'n', "TGTNAME", 0, "Target name e.g. tgt0"},
+    {0}
+};
+
+static char doc_tgt[] =
+        "\n\vExamples:\n"
+        "  lnvm tgt -n tgt0\n"
+        "  lnvm tgt tgt0\n";
+
+static error_t parse_opt_tgt(int key, char *arg, struct argp_state *state)
+{
+    struct arguments *args = state->input;
+
+    switch (key) {
+        case 'n':
+            if (!arg || args->tgt_name)
+                argp_usage(state);
+            if (strlen(arg) > DISK_NAME_LEN) {
+                printf("Argument too long\n");
+                argp_usage(state);
+            }
+            args->tgt_name = arg;
+            args->arg_num++;
+            break;
+        case ARGP_KEY_ARG:
+            if (args->arg_num > 1)
+                argp_usage(state);
+            if (arg) {
+                args->tgt_name = arg;
+                args->arg_num++;
+            }
+            break;
+        case ARGP_KEY_END:
+            if (args->arg_num < 1)
+                argp_usage(state);
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
+
+static struct argp argp_tgt = { opt_tgt, parse_opt_tgt, 0, doc_tgt};
+
+/* END CMD TGT INFO */
+
 static char doc_global[] = "\n*** LNVM MANAGER ***\n"
                     " \nlnvm-manager is a tool to manage LightNVM-enabled devices\n"
                     " such as OpenChannel SSDs.\n\n"
                     "  Available commands:\n"
-                    "   tgt     Show registered lightNVM targets\n"
+                    "   info    Show available lightNVM target types\n"
                     "   dev     Show registered lightNVM devices\n"
                     "   new     Init a target on top of a device\n"
-                    "   rm      Remove a target from a device\n";
+                    "   rm      Remove a target from a device\n"
+                    "   tgt     Show info about an online target ('new' command)\n";
 
 static void cmd_prepare(struct argp_state *state, struct arguments *args, char *cmd, struct argp *argp_cmd)
 {
@@ -181,8 +236,8 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
     switch(key)
     {
         case ARGP_KEY_ARG:
-            if (strcmp(arg, "tgt") == 0)
-                args->cmdtype = LNVM_TGT;
+            if (strcmp(arg, "info") == 0)
+                args->cmdtype = LNVM_INFO;
             else if (strcmp(arg, "dev") == 0)
                 args->cmdtype = LNVM_DEV;
             else if (strcmp(arg, "new") == 0){
@@ -193,6 +248,10 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
                 args->cmdtype = LNVM_RM;   
                 cmd_prepare(state, args, "rm", &argp_rm);
             }
+            else if (strcmp(arg, "tgt") == 0){
+                args->cmdtype = LNVM_TGT;
+                cmd_prepare(state, args, "tgt", &argp_tgt);
+            }
             break;
         default:
             return ARGP_ERR_UNKNOWN;
@@ -202,7 +261,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 static struct argp argp = {NULL, parse_opt, "lnvm [<cmd> [cmd-options]]", doc_global};
 
-void show_targets(struct arguments *args)
+void show_info(struct arguments *args)
 {
     struct nvm_ioctl_info c;
     int ret, i;
@@ -311,6 +370,29 @@ void remove_tgt(struct arguments *args)
     printf("\n");
 }
 
+void show_tgt_info(struct arguments *args)
+{
+    struct nvm_ioctl_tgt_info tgt;
+    int ret;
+
+    sprintf(tgt.target.tgtname, "%s", args->tgt_name);
+    
+    printf("\n### LNVM TARGET INFO ###\n");
+
+    ret = nvm_get_target_info(&tgt);
+
+    if (ret) {
+        printf("nvm_get_target_info error. Do you have root privilegies? If yes, look 'dmesg'.\n");
+        return;
+    }
+    
+    printf("\n Target File: /dev/%s\n",tgt.target.tgtname);
+    printf(" Target Type: %s (%u, %u, %u)\n", tgt.target.tgttype, tgt.version[0],tgt.version[1],tgt.version[2]);
+    printf(" Device: %s\n",tgt.target.dev);
+    printf("\n");
+    
+}
+
 int main(int argc, char **argv)
 {
     struct arguments args = { 0 };
@@ -322,8 +404,8 @@ int main(int argc, char **argv)
 
     switch (args.cmdtype)
     {
-        case LNVM_TGT:
-            show_targets(&args);
+        case LNVM_INFO:
+            show_info(&args);
             break;
         case LNVM_DEV:
             show_devices(&args);
@@ -333,6 +415,9 @@ int main(int argc, char **argv)
             break;
         case LNVM_RM:
             remove_tgt(&args);
+            break;
+        case LNVM_TGT:
+            show_tgt_info(&args);
             break;
         default:
             printf("Invalid command.\n");            
