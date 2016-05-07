@@ -9,13 +9,18 @@
 #include <string.h>
 #include <linux/lightnvm.h>
 #include <liblightnvm.h>
+#include <linux/types.h>
 
 enum cmdtypes {
     LNVM_INFO = 1,
     LNVM_DEV,
     LNVM_NEW,
     LNVM_RM,
-    LNVM_TGT
+    LNVM_TGT,
+    LNVM_GETBLK,
+    LNVM_PUTBLK,
+    LNVM_WRITE,
+    LNVM_READ
 };
 
 struct arguments
@@ -33,6 +38,10 @@ struct arguments
     char *rm_name;
     /* CMD TGT */
     char *tgt_name;
+    /* CMD GETBLK */
+    int getblk_argn;
+    NVM_VBLOCK getblk_vblk;
+    char getblk_tgt[DISK_NAME_LEN];
 };
 
 const char *argp_program_version = "lnvm-manager 1.0";
@@ -200,15 +209,77 @@ static struct argp argp_tgt = { opt_tgt, parse_opt_tgt, 0, doc_tgt};
 
 /* END CMD TGT INFO */
 
+/* CMD GET BLOCK */
+
+static struct argp_option opt_getblk[] = {
+    {"lun", 'l', "LUN", 0, "LUN id. <int>"},
+    {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},
+    {0}
+};
+
+static char doc_getblk[] =
+        "\n\vExamples:\n"
+        "  lnvm getblock -l 2 -n mydev\n"
+        "  lnvm getblock -n mydev (without 'l' argument to pick a random LUN)\n";
+
+static error_t parse_opt_getblk(int key, char *arg, struct argp_state *state)
+{
+    struct arguments *args = state->input;
+
+    switch (key) {
+        case 'l':
+            args->getblk_vblk.vlun_id = atoi(arg);
+            if (args->getblk_vblk.vlun_id < 0)
+                argp_usage(state);
+            args->getblk_vblk.flags |= NVM_PROV_SPEC_LUN;
+            args->getblk_vblk.owner_id = 101;
+            args->arg_num++;
+            break;
+        case 'n':
+            strcpy(args->getblk_tgt,arg);
+            args->arg_num++;
+            args->getblk_argn++; 
+            break;
+        case ARGP_KEY_ARG:
+            if (args->arg_num > 2)
+                argp_usage(state);
+            break;
+        case ARGP_KEY_END:
+            if (args->arg_num < 1 || !args->getblk_argn)
+                argp_usage(state);
+            if (args->arg_num == 1){
+                /* wait for NVM_PROV_RAND_LUN until the feature has been developed in the kernel */
+                /* for now, random LUN we pick LUN 0 */
+                //args->getblk_vblk.flags |= NVM_PROV_RAND_LUN;
+                args->getblk_vblk.flags |= NVM_PROV_SPEC_LUN;
+                args->getblk_vblk.vlun_id = 0;
+                args->getblk_vblk.owner_id = 101;
+            }
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
+
+static struct argp argp_getblk = { opt_getblk, parse_opt_getblk, 0, doc_getblk};
+
+/* END CMD GET BLOCK */
+
 static char doc_global[] = "\n*** LNVM MANAGER ***\n"
                     " \nlnvm-manager is a tool to manage LightNVM-enabled devices\n"
                     " such as OpenChannel SSDs.\n\n"
                     "  Available commands:\n"
-                    "   info    Show available lightNVM target types\n"
-                    "   dev     Show registered lightNVM devices\n"
-                    "   new     Init a target on top of a device\n"
-                    "   rm      Remove a target from a device\n"
-                    "   tgt     Show info about an online target ('new' command)\n";
+                    "   info            Show available lightNVM target types\n"
+                    "   dev             Show registered lightNVM devices\n"
+                    "   new             Init a target on top of a device\n"
+                    "   rm              Remove a target from a device\n"
+                    "   tgt             Show info about an online target ('new' command)\n"
+                    "   getblock        Get a block from a specific LUN\n"
+                    "   putblock        Free a block\n"
+                    "   write           Write data to a block (use 'getblock' before)\n"
+                    "   read            Read data from a block\n";
 
 static void cmd_prepare(struct argp_state *state, struct arguments *args, char *cmd, struct argp *argp_cmd)
 {
@@ -252,6 +323,10 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
                 args->cmdtype = LNVM_TGT;
                 cmd_prepare(state, args, "tgt", &argp_tgt);
             }
+            else if (strcmp(arg, "getblock") == 0){
+                args->cmdtype = LNVM_GETBLK;
+                cmd_prepare(state, args, "getblock", &argp_getblk);
+            }
             break;
         default:
             return ARGP_ERR_UNKNOWN;
@@ -261,7 +336,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 static struct argp argp = {NULL, parse_opt, "lnvm [<cmd> [cmd-options]]", doc_global};
 
-void show_info(struct arguments *args)
+static void show_info(struct arguments *args)
 {
     struct nvm_ioctl_info c;
     int ret, i;
@@ -284,7 +359,7 @@ void show_info(struct arguments *args)
     printf("\n");
 }
 
-void show_devices(struct arguments *args)
+static void show_devices(struct arguments *args)
 {
     struct nvm_ioctl_get_devices devs;
     int ret, i;
@@ -301,6 +376,7 @@ void show_devices(struct arguments *args)
     for (i = 0; i < devs.nr_devices && i < 31; i++) {
         struct nvm_ioctl_dev_info *dev = &devs.info[i];
         struct nvm_ioctl_dev_info info;
+        uint32_t pg_size, pln_pg_size;
         
         strncpy(info.dev, dev->dev, DISK_NAME_LEN);
         ret = nvm_get_device_info(&info); 
@@ -308,11 +384,17 @@ void show_devices(struct arguments *args)
             printf("nvm_get_device_info error.\n");
         }        
 
+        // Calculated values
+        pg_size = info.prop.sec_size * info.prop.sec_per_page;
+        pln_pg_size = pg_size * info.prop.nr_planes;
+
         printf("\n  Device: %s. Managed by %s (%u, %u, %u)\n", dev->dev, dev->bmname,
                 dev->bmversion[0], dev->bmversion[1],
                 dev->bmversion[2]);
-        printf("   Sector size: %d\n",info.prop.sec_size);
+        printf("   Sector size: %d bytes\n",info.prop.sec_size);
         printf("   Sectors per page: %d\n",info.prop.sec_per_page);
+        printf("   Page size: %d bytes\n",pg_size);
+        printf("   Plane Page Size: %d bytes\n",pln_pg_size);
         printf("   Nr of planes: %d\n",info.prop.nr_planes);
         printf("   Nr of LUNs: %d\n",info.prop.nr_luns);
         printf("   Nr of Channels: %d\n",info.prop.nr_channels);
@@ -323,7 +405,7 @@ void show_devices(struct arguments *args)
     printf("\n");
 }
 
-void create_tgt(struct arguments *args)
+static void create_tgt(struct arguments *args)
 {
     struct nvm_ioctl_tgt_create c;
     int ret;
@@ -349,7 +431,7 @@ void create_tgt(struct arguments *args)
     printf("\n");
 }
 
-void remove_tgt(struct arguments *args)
+static void remove_tgt(struct arguments *args)
 {
     struct nvm_ioctl_tgt_remove c;
     int ret;
@@ -370,7 +452,7 @@ void remove_tgt(struct arguments *args)
     printf("\n");
 }
 
-void show_tgt_info(struct arguments *args)
+static void show_tgt_info(struct arguments *args)
 {
     struct nvm_ioctl_tgt_info tgt;
     int ret;
@@ -391,6 +473,36 @@ void show_tgt_info(struct arguments *args)
     printf(" Device: %s\n",tgt.target.dev);
     printf("\n");
     
+}
+
+static void get_blk(struct arguments *args)
+{
+    NVM_VBLOCK *vblk;
+    int tgt_fd;
+    int ret;
+
+    vblk = &args->getblk_vblk;
+    
+     printf("\n### LNVM GET BLOCK ###\n");
+
+    tgt_fd = nvm_target_open(args->getblk_tgt, 0x0);
+    if (tgt_fd < 0) {
+        printf("nvm_target_open error. Failed to open LightNVM target %s.\n",args->getblk_tgt);
+        return;
+    }
+
+    ret = nvm_get_block(tgt_fd, vblk->vlun_id, vblk);
+    if (ret) {
+        printf("nvm_get_block error. Do you have root privilegies? If yes, look 'dmesg'.\n");
+        return;
+    }
+
+    printf("\n A block has been succesfully allocated.\n");
+    printf(" LUN: %d\n", vblk->vlun_id);
+    printf(" Block ID: %llu\n", vblk->id);
+    printf(" Block initial addr (bppa): %#018llx\n", vblk->bppa);
+    printf(" Nr of ppas (pages): %d\n", vblk->nppas);
+    printf("\n");
 }
 
 int main(int argc, char **argv)
@@ -418,6 +530,9 @@ int main(int argc, char **argv)
             break;
         case LNVM_TGT:
             show_tgt_info(&args);
+            break;
+        case LNVM_GETBLK:
+            get_blk(&args);
             break;
         default:
             printf("Invalid command.\n");            
