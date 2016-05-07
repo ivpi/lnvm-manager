@@ -42,6 +42,10 @@ struct arguments
     int getblk_argn;
     NVM_VBLOCK getblk_vblk;
     char getblk_tgt[DISK_NAME_LEN];
+    /* CMD PUTBLK */
+    int putblk_argn;
+    NVM_VBLOCK putblk_vblk;
+    char putblk_tgt[DISK_NAME_LEN];
 };
 
 const char *argp_program_version = "lnvm-manager 1.0";
@@ -267,6 +271,62 @@ static struct argp argp_getblk = { opt_getblk, parse_opt_getblk, 0, doc_getblk};
 
 /* END CMD GET BLOCK */
 
+/* CMD PUT BLOCK */
+
+static struct argp_option opt_putblk[] = {
+    {"lunid", 'l', "LUN_ID", 0, "LUN ID. <int>"},
+    {"blockid", 'b', "BLOCK_ID", 0, "Block ID. <int>"},
+    {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},
+    {0}
+};
+
+static char doc_putblk[] =
+        "\nYou must use the same LUN and block you allocated by 'getblock'.\n"
+        "\n\vExamples:\n"
+        "  lnvm putblock -l 1 -b 1022 -n mydev\n"
+        "  lnvm putblock -l 0 -b 5 -n mydev\n";
+
+static error_t parse_opt_putblk(int key, char *arg, struct argp_state *state)
+{
+    struct arguments *args = state->input;
+
+    switch (key) {
+        case 'b':
+            args->putblk_vblk.id = atoi(arg);
+            if (args->putblk_vblk.id < 0)
+                argp_usage(state);
+            args->arg_num++;
+            break;
+        case 'l':
+            args->putblk_vblk.vlun_id = atoi(arg);
+            if (args->putblk_vblk.vlun_id < 0)
+                argp_usage(state);
+            args->arg_num++;
+            break;
+        case 'n':
+            strcpy(args->putblk_tgt,arg);
+            args->arg_num++;
+            args->putblk_argn++; 
+            break;
+        case ARGP_KEY_ARG:
+            if (args->arg_num > 3 || !args->putblk_argn)
+                argp_usage(state);
+            break;
+        case ARGP_KEY_END:
+            if (args->arg_num < 3)
+                argp_usage(state);
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
+
+static struct argp argp_putblk = { opt_putblk, parse_opt_putblk, 0, doc_putblk};
+
+/* END CMD PUT BLOCK */
+
 static char doc_global[] = "\n*** LNVM MANAGER ***\n"
                     " \nlnvm-manager is a tool to manage LightNVM-enabled devices\n"
                     " such as OpenChannel SSDs.\n\n"
@@ -326,6 +386,10 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
             else if (strcmp(arg, "getblock") == 0){
                 args->cmdtype = LNVM_GETBLK;
                 cmd_prepare(state, args, "getblock", &argp_getblk);
+            }
+            else if (strcmp(arg, "putblock") == 0){
+                args->cmdtype = LNVM_PUTBLK;
+                cmd_prepare(state, args, "putblock", &argp_putblk);
             }
             break;
         default:
@@ -475,6 +539,35 @@ static void show_tgt_info(struct arguments *args)
     
 }
 
+static void put_blk(struct arguments *args)
+{
+    NVM_VBLOCK *vblk;
+    int tgt_fd;
+    int ret;
+
+    vblk = &args->putblk_vblk;
+
+    printf("\n### LNVM PUT BLOCK ###\n");
+
+    tgt_fd = nvm_target_open(args->putblk_tgt, 0x0);
+    if (tgt_fd < 0) {
+        printf("nvm_target_open error. Failed to open LightNVM target %s.\n",args->getblk_tgt);
+        return;
+    }
+
+
+    ret = nvm_put_block(tgt_fd, vblk);
+    if (ret) {
+        printf("nvm_put_block error. Could not put block %llu to LUN %u.\n",vblk->id, vblk->vlun_id);
+        return;
+    }
+
+    nvm_target_close(tgt_fd);
+
+    printf("\n Block %llu from LUN %u has been succesfully freed.\n",vblk->id, vblk->vlun_id);
+    printf("\n");
+}
+
 static void get_blk(struct arguments *args)
 {
     NVM_VBLOCK *vblk;
@@ -483,7 +576,7 @@ static void get_blk(struct arguments *args)
 
     vblk = &args->getblk_vblk;
     
-     printf("\n### LNVM GET BLOCK ###\n");
+    printf("\n### LNVM GET BLOCK ###\n");
 
     tgt_fd = nvm_target_open(args->getblk_tgt, 0x0);
     if (tgt_fd < 0) {
@@ -493,9 +586,11 @@ static void get_blk(struct arguments *args)
 
     ret = nvm_get_block(tgt_fd, vblk->vlun_id, vblk);
     if (ret) {
-        printf("nvm_get_block error. Do you have root privilegies? If yes, look 'dmesg'.\n");
+        printf("nvm_get_block error. 'dmesg' for further info.\n");
         return;
     }
+
+    nvm_target_close(tgt_fd);
 
     printf("\n A block has been succesfully allocated.\n");
     printf(" LUN: %d\n", vblk->vlun_id);
@@ -504,6 +599,8 @@ static void get_blk(struct arguments *args)
     printf(" Nr of ppas (pages): %d\n", vblk->nppas);
     printf("\n");
 }
+
+
 
 int main(int argc, char **argv)
 {
@@ -533,6 +630,9 @@ int main(int argc, char **argv)
             break;
         case LNVM_GETBLK:
             get_blk(&args);
+            break;
+        case LNVM_PUTBLK:
+            put_blk(&args);
             break;
         default:
             printf("Invalid command.\n");            
