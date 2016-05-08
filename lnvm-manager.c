@@ -2,7 +2,9 @@
     Now, instead of direct ioctl calls, we manage lightNVM
     devices through 'liblightnvm'.
 
-    The main 
+    The main improvement is the parallelism among LUNs.
+    Now, it is possible to pick blocks from different LUNs,
+    and read/write in parallel. 
 */        
 
 #include <stdio.h>
@@ -14,11 +16,29 @@
 #include <liblightnvm.h>
 #include <linux/types.h>
 
-struct nvm_fpage {
+struct nvm_dev_info {
     uint32_t sec_size;
     uint32_t page_size;
     uint32_t pln_pg_size;
     uint32_t max_sec_io;
+    uint16_t pg_per_blk;
+    uint16_t pg_sec_ratio;
+};
+
+struct nvm_io_info {
+    int tgt_fd;
+    char * tgt_name;
+    uint32_t blk_id;
+    size_t current_ppa;
+    char * buf_offset;
+    char * buf_data;
+    int left_pages;
+    uint32_t bytes_trans;
+};
+
+enum io_dir {
+    READ = 0,
+    WRITE
 };
 
 enum cmdtypes {
@@ -59,6 +79,12 @@ struct arguments
     /* CMD WRITE */
     char write_tgt[DISK_NAME_LEN];
     uint32_t write_blkid;
+    /* CMD READ */
+    char read_tgt[DISK_NAME_LEN];
+    uint32_t read_blkid;
+    uint32_t read_pgid;
+    int read_argb;
+    int read_argn;
 };
 
 const char *argp_program_version = "lnvm-manager 1.0";
@@ -393,6 +419,65 @@ static struct argp argp_write = { opt_write, parse_opt_write, 0, doc_write};
 
 /* END CMD WRITE */
 
+/* CMD READ */
+
+static struct argp_option opt_read[] = {
+    {"blockid", 'b', "BLOCK_ID", 0, "Block ID. <int>"},
+    {"pageid", 'p', "PAGE_ID", 0, "Page ID within the block"}, 
+    {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},    
+    {0}
+};
+
+static char doc_read[] =
+   "\nWe consider 256 pages per block for now (This info should come from kernel).\n"
+   "Use this command to read a full block or an invidual page.\n" 
+   "\n\vExamples:\n"
+   "  lnvm read -b 50 -n mydev (without 'p' to read the whole block)\n"
+   "  lnvm read -b 50 -p 10 -n mydev\n"
+   "  lnvm read -b 50 -n mydev > output.file";
+
+static error_t parse_opt_read(int key, char *arg, struct argp_state *state)
+{
+    struct arguments *args = state->input;
+
+    switch (key) {
+        case 'b':
+            args->read_blkid = atoi(arg);
+            if (args->read_blkid < 0)
+                argp_usage(state);
+            args->arg_num++;
+            args->read_argb++;
+            break;
+        case 'n':
+            strcpy(args->read_tgt,arg);
+            args->arg_num++;
+            args->read_argn++;
+            break;
+        case 'p':
+            args->read_pgid = atoi(arg);
+            if (args->read_pgid < 0)
+                argp_usage(state);
+            args->arg_num++;
+            break;
+        case ARGP_KEY_ARG:
+            if (args->arg_num > 3)
+                argp_usage(state);
+            break;
+        case ARGP_KEY_END:
+            if (args->arg_num < 2 || !args->read_argb || !args->read_argn)
+                argp_usage(state);
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
+
+static struct argp argp_read = { opt_read, parse_opt_read, 0, doc_read};
+
+/* END CMD READ */
+
 static char doc_global[] = "\n*** LNVM MANAGER ***\n"
       " \nlnvm-manager is a tool to manage LightNVM-enabled devices\n"
       " such as OpenChannel SSDs.\n\n"
@@ -401,7 +486,8 @@ static char doc_global[] = "\n*** LNVM MANAGER ***\n"
       "   dev             Show registered lightNVM devices\n"
       "   new             Init a target on top of a device\n"
       "   rm              Remove a target from a device\n"
-      "   tgt             Show info about an online target ('new' command)\n"
+      "   tgt             Show info about an online target "
+                                            "(created by 'new' command)\n"
       "   getblock        Get a block from a specific LUN\n"
       "   putblock        Free a block\n"
       "   write           Write data to a block (use 'getblock' before)\n"
@@ -462,6 +548,10 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
                 args->cmdtype = LNVM_WRITE;
                 cmd_prepare(state, args, "write", &argp_write);
             }
+            else if (strcmp(arg, "read") == 0){
+                args->cmdtype = LNVM_READ;
+                cmd_prepare(state, args, "read", &argp_read);
+            }
             break;
         default:
             return ARGP_ERR_UNKNOWN;
@@ -472,22 +562,35 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 static struct argp argp = {NULL, parse_opt, "lnvm [<cmd> [cmd-options]]",
                                                             doc_global};
 
-static int get_dev_info(struct nvm_ioctl_dev_info *dev_info,
-                        struct nvm_fpage *fpage)
+static int get_dev_info(char * tgt_name, struct nvm_dev_info *info)
 {
     static struct nvm_ioctl_dev_prop *dev_prop;
+    static struct nvm_ioctl_tgt_info tgt_info; 
+    static struct nvm_ioctl_dev_info dev_ioctl_info;
     int ret = 0;
 
-    ret = nvm_get_device_info(dev_info);
+    sprintf(tgt_info.target.tgtname, "%s", tgt_name);
+    ret = nvm_get_target_info(&tgt_info);
+    if (ret) {
+        printf("nvm_get_target_info error. Failed to get target info.\n");
+        goto out;
+    }
+
+    strncpy(dev_ioctl_info.dev, tgt_info.target.dev, DISK_NAME_LEN);
+
+    ret = nvm_get_device_info(&dev_ioctl_info);
     if (ret)
         goto out;
 
-    dev_prop = &dev_info->prop;
+    dev_prop = &dev_ioctl_info.prop;
+    
+    info->sec_size = dev_prop->sec_size;
+    info->page_size = info->sec_size * dev_prop->sec_per_page;
+    info->pln_pg_size = info->page_size * dev_prop->nr_planes;
+    info->pg_sec_ratio = info->pln_pg_size / info->sec_size;
 
-    fpage->sec_size = dev_prop->sec_size;
-    fpage->page_size = fpage->sec_size * dev_prop->sec_per_page;
-    fpage->pln_pg_size = fpage->page_size * dev_prop->nr_planes;
-
+    /* pg_per_blk should come from the kernel, we wait for this */
+    info->pg_per_blk = 256;
 out:
     return ret;
 }
@@ -786,90 +889,127 @@ static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_
     printf("\n Bytes processed: %u bytes\n",written);
 }
 
-static void lnvm_write(struct arguments *args)
+static int io_prepare(struct nvm_io_info *io, struct nvm_dev_info *info)
 {
-    int tgt_fd, ret;
-    struct nvm_ioctl_tgt_info tgt;
-    static struct nvm_ioctl_dev_info dev_info;
-    static struct nvm_fpage fpage;
-    size_t current_ppa;
-    char * current_input;
-    uint32_t pg_sec_ratio;
-    char * input_data;
-    int left_pages;
-    uint32_t bytes_written;
+    int ret;
 
-    /* pg_per_blk should come from the kernel, we wait for this */
-    int pg_per_blk = 256;
-
-    printf("\n ### LNVM WRITE ###\n");
-
-    tgt_fd = nvm_target_open(args->write_tgt, 0x0);
-    if (tgt_fd < 0) {
+    io->tgt_fd = nvm_target_open(io->tgt_name, 0x0);
+    if (io->tgt_fd < 0) {
         printf("nvm_target_open error. Failed to open LightNVM target %s.\n",
-                                                            args->getblk_tgt);
-        return;
-    }  
+                                                                    io->tgt_name);
+        return -1;
+    } 
 
-    sprintf(tgt.target.tgtname, "%s", args->write_tgt);
-    ret = nvm_get_target_info(&tgt);
+    ret = posix_memalign((void **)&io->buf_data, info->sec_size, 
+                                          info->pln_pg_size * info->pg_per_blk);
     if (ret) {
-        printf("nvm_get_target_info error. Failed to get target info.\n");
-        return;
+        printf("Could not allocate write/read aligned memory (%d,%d)\n",
+                    info->sec_size, info->pln_pg_size);
+        return -1;
     }
+    
+    io->bytes_trans = 0;
+    io->current_ppa = io->blk_id * info->pg_per_blk;  
+    io->left_pages = info->pg_per_blk;
 
-    strncpy(dev_info.dev, tgt.target.dev, DISK_NAME_LEN);
-    ret = get_dev_info(&dev_info, &fpage);
+    return 0;
+}
+
+static int lnvm_io (struct nvm_io_info *io, struct nvm_dev_info *info, uint8_t direction)
+{   
+    int ret;
+   
+    ret = get_dev_info(io->tgt_name, info);
     if (ret) {
         printf("nvm_dev_info error. Failed to get device info.\n");
-        return;
-    }
-
-    pg_sec_ratio = fpage.pln_pg_size / fpage.sec_size;
- 
-    ret = posix_memalign((void **)&input_data, fpage.sec_size, 
-                                                fpage.pln_pg_size * pg_per_blk);
-    if (ret) {
-        printf("Could not allocate write aligned memory (%d,%d)\n",
-                    fpage.sec_size, fpage.pln_pg_size);
         goto clean;
     }
 
-    write_prepare(input_data, fpage.pln_pg_size, pg_per_blk, args->write_blkid);
+    ret = io_prepare(io, info);
+    if (ret)
+        goto clean;
+  
+    if(direction == WRITE)
+        write_prepare(io->buf_data, info->pln_pg_size, info->pg_per_blk, io->blk_id);
 
-    printf("\n WRITING TO DEVICE...\n");
-
-    bytes_written = 0;
-    current_ppa = args->write_blkid * pg_per_blk;  
-    left_pages = pg_per_blk;
-    while(left_pages > 0){
+    while(io->left_pages > 0){
         //sleep(1);
 
-        current_input = input_data + ( (pg_per_blk-left_pages) * fpage.pln_pg_size );
+        io->buf_offset = io->buf_data + ( (info->pg_per_blk-io->left_pages) * info->pln_pg_size );
 
-        ret = pwrite(tgt_fd, current_input, fpage.pln_pg_size,
-                                        current_ppa * fpage.sec_size);
+        ret = (direction)?pwrite(io->tgt_fd, io->buf_offset, info->pln_pg_size,
+                                io->current_ppa * info->sec_size):
+                          pread(io->tgt_fd, io->buf_offset, info->pln_pg_size,
+                                io->current_ppa * info->sec_size);
        // printf("  buf: %#018llx, current_ppa: %lu, offset: %lu\n", 
-       //     (long long unsigned int) current_input, current_ppa, current_ppa * fpage.sec_size);
-        if (ret != fpage.pln_pg_size) {
-            printf("  Could not write data to page %d.\n", pg_per_blk-left_pages);
+       //     (long long unsigned int) io->buf_offset, io->current_ppa, io->current_ppa * info->sec_size);
+        if (ret != info->pln_pg_size) {
+            printf("  Could not perform IO on page %d.\n", info->pg_per_blk-io->left_pages);
             goto clean;
         }
-        bytes_written += ret;
+        io->bytes_trans += ret;
     
-       // printf("  Page %d succesfull.\n",pg_per_blk - left_pages);
+       // printf("  Page %d succesfull.\n",info->pg_per_blk - io->left_pages);
 
-        current_ppa += pg_sec_ratio;
-        left_pages--; 
+        io->current_ppa += info->pg_sec_ratio;
+        io->left_pages--; 
     }
+    ret = 0;
 
-    printf(" Full write of %d pages in block %d performed succesfully.\n", pg_per_blk, args->write_blkid);
-    printf(" Total bytes written: %u bytes\n", bytes_written);
+clean:
+    nvm_target_close(io->tgt_fd);    
+    return ret;
+}
+
+static void lnvm_write(struct arguments *args)
+{
+    int ret;
+    static struct nvm_io_info io;
+    static struct nvm_dev_info info;
+    
+    io.blk_id = args->write_blkid;
+    io.tgt_name = args->write_tgt;
+ 
+    printf("\n ### LNVM FULL BLOCK WRITE ###\n");
+    printf("\n WRITING TO DEVICE...\n");
+    
+    ret = lnvm_io(&io, &info, WRITE);
+    if (ret)
+        goto clean;
+    
+    printf(" Full write of %d pages in block %d performed succesfully.\n", info.pg_per_blk, io.blk_id);
+    printf(" Total bytes written: %u bytes\n", io.bytes_trans);
     printf("\n");
 
 clean:
-    nvm_target_close(tgt_fd);
-    free(input_data);
+    free(io.buf_data);
+}
+
+void static lnvm_read(struct arguments *args) 
+{
+    /* if args->read_pgid > 0, read individual page */
+     
+    int ret;
+    static struct nvm_io_info io;
+    static struct nvm_dev_info info;
+    
+    io.blk_id = args->read_blkid;
+    io.tgt_name = args->read_tgt;
+ 
+    printf("\n ### LNVM FULL BLOCK READ ###\n");
+    printf("\n READING FROM DEVICE...\n");
+    
+    ret = lnvm_io(&io, &info, READ);
+    if (ret)
+        goto clean;
+
+    printf(" Full read of %d pages in block %d performed succesfully.\n", info.pg_per_blk, io.blk_id);
+    printf(" Total bytes read: %u bytes\n", io.bytes_trans);
+    printf("%s",io.buf_data);
+    printf("\n");
+
+clean:
+    free(io.buf_data);
 }
 
 int main(int argc, char **argv)
@@ -906,6 +1046,9 @@ int main(int argc, char **argv)
             break;
         case LNVM_WRITE:
             lnvm_write(&args);
+            break;
+        case LNVM_READ:
+            lnvm_read(&args);
             break;
         default:
             printf("Invalid command.\n");            
