@@ -1,6 +1,7 @@
 # lnvm-manager (LightNVM Administrator and Tester)
 A tool to manage and test LightNVM-enable devices, such as OpenChannel SSDs.
 
+```
 Features:
    See information about LightNVM devices;
    See available LightNVM target types in the kernel;
@@ -14,6 +15,7 @@ Features:
    Write/Read an individual page within a block and specific LUN;
    Write/Read a range of sequential pages within a block and specific LUN;
    During IO operations (read/write) there is no output (use '-v' to see output)
+```
 
 The previous version of this software is 'lnvm' by Matias Bjørling:
 
