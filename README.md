@@ -175,6 +175,10 @@ Examples:
 We consider 256 pages per block for now (This info should come from kernel).
 Use this command to overwrite the whole block, to write an indidual page or a
 range of pages.
+
+Each page written is filled with a human-readable byte sequency you can 
+see in the 'read' command.
+
 Use 'v' to see information and output during read/write.
 
  Full block: use only 'b' and 'n' keys
@@ -237,4 +241,6 @@ Use 'v' to see information and output during read/write.
     Total read: 8192 bytes
     
     ############## READ OUTPUT ############### (use e.g  '> output.file' to write in a file)
+    If you read a page written by this tool you will see an human-readable array of bytes.
+    If you read an erased or empty page, the bytes will be transfered but no output will appear.
 ```
