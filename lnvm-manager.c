@@ -32,6 +32,8 @@ struct nvm_io_info {
     size_t current_ppa;
     char * buf_offset;
     char * buf_data;
+    int nr_pages;
+    int start_pg;
     int left_pages;
     uint32_t bytes_trans;
 };
@@ -53,38 +55,43 @@ enum cmdtypes {
     LNVM_READ
 };
 
+enum ioargs_flags {
+    IOARGB = 1,
+    IOARGN = 2,
+    IOARGS = 4,
+    IOARGP = 8,
+    IOARGV = 16
+};
+
 struct arguments
 {
     /* GLOBAL */
-    int cmdtype;
-    int arg_num;   
+    int         cmdtype;
+    int         arg_num;   
     /* CMD NEW */
-    char *new_tgt;
-    char *new_dev;
-    char *new_name;
-    int lun_begin;
-    int lun_end;
+    char        *new_tgt;
+    char        *new_dev;
+    char        *new_name;
+    int         lun_begin;
+    int         lun_end;
     /* CMD RM */
-    char *rm_name;
+    char        *rm_name;
     /* CMD TGT */
-    char *tgt_name;
+    char        *tgt_name;
     /* CMD GETBLK */
-    int getblk_argn;
-    NVM_VBLOCK getblk_vblk;
-    char getblk_tgt[DISK_NAME_LEN];
+    int         getblk_argn;
+    NVM_VBLOCK  getblk_vblk;
+    char        getblk_tgt[DISK_NAME_LEN];
     /* CMD PUTBLK */
-    int putblk_argn;
-    NVM_VBLOCK putblk_vblk;
-    char putblk_tgt[DISK_NAME_LEN];
-    /* CMD WRITE */
-    char write_tgt[DISK_NAME_LEN];
-    uint32_t write_blkid;
-    /* CMD READ */
-    char read_tgt[DISK_NAME_LEN];
-    uint32_t read_blkid;
-    uint32_t read_pgid;
-    int read_argb;
-    int read_argn;
+    int         putblk_argn;
+    NVM_VBLOCK  putblk_vblk;
+    char        putblk_tgt[DISK_NAME_LEN];
+    /* CMD IO WRITE/READ */
+    char        io_tgt[DISK_NAME_LEN];
+    uint32_t    io_blkid;
+    uint32_t    io_pgstart;
+    uint32_t    io_nrpages; 
+    uint8_t     io_flag;
 };
 
 const char *argp_program_version = "lnvm-manager 1.0";
@@ -370,113 +377,114 @@ static struct argp argp_putblk = { opt_putblk, parse_opt_putblk, 0,
 
 /* END CMD PUT BLOCK */
 
-/* CMD WRITE */
+/* CMD IO WRITE/READ */
+
+static error_t parse_opt_io(int key, char *arg, struct argp_state *state)
+{
+    struct arguments *args = state->input;
+
+    switch (key) {
+        case 'b':
+            args->io_blkid = atoi(arg);
+            if (args->io_blkid < 0)
+                argp_usage(state);
+            args->arg_num++;
+            args->io_flag |= IOARGB; 
+            break;
+        case 'n':
+            strcpy(args->io_tgt,arg);
+            args->arg_num++;
+            args->io_flag |= IOARGN;
+            break;
+        case 's':
+            args->io_pgstart = atoi(arg);
+            if (args->io_pgstart < 0)
+                argp_usage(state);
+            args->arg_num++;
+            args->io_flag |= IOARGS;
+            break;
+        case 'p':
+            args->io_nrpages = atoi(arg);
+            if (args->io_nrpages < 0)
+                argp_usage(state);
+            args->arg_num++;
+            args->io_flag |= IOARGP;
+            break;
+        case 'v':
+            args->arg_num++;
+            args->io_flag |= IOARGV;
+            break;
+        case ARGP_KEY_ARG:
+            if (args->arg_num > 5)
+                argp_usage(state);
+            break;
+        case ARGP_KEY_END:
+            if (args->arg_num < 2 || (!args->io_flag & IOARGB) 
+                                  || (!args->io_flag & IOARGN))
+                argp_usage(state);
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
 
 static struct argp_option opt_write[] = {
     {"blockid", 'b', "BLOCK_ID", 0, "Block ID. <int>"},
-    {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},    
+    {"page_start", 's', "PAGE_START", 0, "Page start ID within the block"},
+    {"nr_pages", 'p', "NUMBER_OF_PAGES", 0, "Number of pages to read"}, 
+    {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},
+    {"verbose", 'v', 0, 0, "Print info and output to the screen"},    
     {0}
 };
 
 static char doc_write[] =
-   "\nWe consider 256 pages per block for now (This info should come from kernel).\n"
-   "This command will overwrite the whole block, use 'read' to see the data.\n"
+   "\nWe consider 256 pages per block for now (This info should come from "
+                                                                "kernel).\n"
+   "Use this command to overwrite the whole block, "
+   "to write an indidual page or a range of pages.\n"
+   "Use 'v' to see information and output during read/write.\n"
+   "\n Full block: use only 'b' and 'n' keys\n"
+   " Individual page: use only 'b', 'n' and 's' keys or 'p' = 1\n"
+   " A range of pages: use all keys ('b','n','s' and 'p')\n"
    "\n\vExamples:\n"
-   "  lnvm write -b 1022 -n mydev\n"
-   "  lnvm write -b 5 -n mydev\n";
-
-static error_t parse_opt_write(int key, char *arg, struct argp_state *state)
-{
-    struct arguments *args = state->input;
-
-    switch (key) {
-        case 'b':
-            args->write_blkid = atoi(arg);
-            if (args->write_blkid < 0)
-                argp_usage(state);
-            args->arg_num++;
-            break;
-        case 'n':
-            strcpy(args->write_tgt,arg);
-            args->arg_num++;
-            break;
-        case ARGP_KEY_ARG:
-            if (args->arg_num > 2)
-                argp_usage(state);
-            break;
-        case ARGP_KEY_END:
-            if (args->arg_num < 2)
-                argp_usage(state);
-            break;
-        default:
-            return ARGP_ERR_UNKNOWN;
-    }
-
-    return 0;
-}
-
-static struct argp argp_write = { opt_write, parse_opt_write, 0, doc_write};
-
-/* END CMD WRITE */
-
-/* CMD READ */
+   "  lnvm write -b 1022 -n mydev (full block write)\n"
+   "  lnvm write -b 100 -s 10 -n mydev (individual page write)\n"
+   "  lnvm write -b 75 -n mydev -s 5 -p 10 (range page write. From page " 
+                                                                "5 to 14)\n"
+   "  lnvm write -b 1000 -n mydev -p 8 (range page write. From page 0 to 7)\n";
 
 static struct argp_option opt_read[] = {
     {"blockid", 'b', "BLOCK_ID", 0, "Block ID. <int>"},
-    {"pageid", 'p', "PAGE_ID", 0, "Page ID within the block"}, 
+    {"page_start", 's', "PAGE_START", 0, "Page start ID within the block"},
+    {"nr_pages", 'p', "NUMBER_OF_PAGES", 0, "Number of pages to read"}, 
     {"target", 'n', "TARGET_NAME", 0, "Target name. e.g. 'mydev'"},    
+    {"verbose", 'v', 0, 0, "Print info and output to the screen"},
     {0}
 };
 
 static char doc_read[] =
-   "\nWe consider 256 pages per block for now (This info should come from kernel).\n"
-   "Use this command to read a full block or an invidual page.\n" 
+   "\nWe consider 256 pages per block for now (This info should come from " 
+                                                                "kernel).\n"
+   "Use this command to read a full block, an invidual or a range of page.\n"
+   "Use 'v' to see information and output during read/write.\n"
+   "\n Full block: use only 'b' and 'n' keys\n"
+   " Individual page: use only 'b', 'n' and 's' keys or 'p' = 1\n"
+   " A range of pages: use all keys ('b','n','s' and 'p')\n" 
    "\n\vExamples:\n"
-   "  lnvm read -b 50 -n mydev (without 'p' to read the whole block)\n"
-   "  lnvm read -b 50 -p 10 -n mydev\n"
-   "  lnvm read -b 50 -n mydev > output.file";
+   "  lnvm read -b 50 -n mydev (full block read)\n"
+   "  lnvm read -b 50 -s 10 -n mydev (individual page read)\n"
+   "  lnvm read -b 50 -n mydev > output.file (full block read with output "
+                                                                    "file)\n"
+   "  lnvm read -b 50 -n mydev -s 5 -p 10 (range page read. From page " 
+                                                                "5 to 14)\n"
+   "  lnvm read -b 50 -n mydev -p 8 (range page read. From page 0 to 7)\n";
 
-static error_t parse_opt_read(int key, char *arg, struct argp_state *state)
-{
-    struct arguments *args = state->input;
+static struct argp argp_write = { opt_write, parse_opt_io, 0, doc_write};
+static struct argp argp_read = { opt_read, parse_opt_io, 0, doc_read};
 
-    switch (key) {
-        case 'b':
-            args->read_blkid = atoi(arg);
-            if (args->read_blkid < 0)
-                argp_usage(state);
-            args->arg_num++;
-            args->read_argb++;
-            break;
-        case 'n':
-            strcpy(args->read_tgt,arg);
-            args->arg_num++;
-            args->read_argn++;
-            break;
-        case 'p':
-            args->read_pgid = atoi(arg);
-            if (args->read_pgid < 0)
-                argp_usage(state);
-            args->arg_num++;
-            break;
-        case ARGP_KEY_ARG:
-            if (args->arg_num > 3)
-                argp_usage(state);
-            break;
-        case ARGP_KEY_END:
-            if (args->arg_num < 2 || !args->read_argb || !args->read_argn)
-                argp_usage(state);
-            break;
-        default:
-            return ARGP_ERR_UNKNOWN;
-    }
-
-    return 0;
-}
-
-static struct argp argp_read = { opt_read, parse_opt_read, 0, doc_read};
-
-/* END CMD READ */
+/* END CMD IO READ/WRITE */
 
 static char doc_global[] = "\n*** LNVM MANAGER ***\n"
       " \nlnvm-manager is a tool to manage LightNVM-enabled devices\n"
@@ -488,9 +496,9 @@ static char doc_global[] = "\n*** LNVM MANAGER ***\n"
       "   rm              Remove a target from a device\n"
       "   tgt             Show info about an online target "
                                             "(created by 'new' command)\n"
-      "   getblock        Get a block from a specific LUN\n"
-      "   putblock        Free a block\n"
-      "   write           Write data to a block (use 'getblock' before)\n"
+      "   getblock        Get a block from a specific LUN (mark as in-use)\n"
+      "   putblock        Free a block (mark as free, it can be erased)\n"
+      "   write           Write data to a block\n"
       "   read            Read data from a block\n";
 
 static void cmd_prepare(struct argp_state *state, struct arguments *args,
@@ -808,7 +816,8 @@ static void lnvm_get_blk(struct arguments *args)
     printf("\n");
 }
 
-static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_t blk_id)
+static void write_prepare(struct nvm_io_info *io, struct nvm_dev_info *info,
+                                                            uint8_t verbose)
 {
     char *current;
     unsigned int written;
@@ -816,17 +825,20 @@ static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_
     int pg_lines;
     int i, pg;
     char aux[9];
+    char input_char;
 
-    current = buf;
+    current = io->buf_data;
     written = 0;
-    total_bytes = pg_size * n_pages;
-    pg_lines = pg_size / 64;
+    total_bytes = info->pln_pg_size * io->nr_pages;
+    pg_lines = info->pln_pg_size / 64;
     
-    printf("\n Total to be written: %d bytes\n Nr of pages: %d\n Page size: %u bytes\n",
-                                    total_bytes, n_pages, pg_size);
-    printf("\n PROCESSING INPUT...\n");
+    if(verbose)
+        printf("\n Total to be written: %d bytes\n Nr of pages: %d\n "
+         "Page size: %u bytes\n", total_bytes, io->nr_pages, info->pln_pg_size);
     
-    for(pg = 0; pg < n_pages; pg++){
+    for(pg = io->start_pg; pg < io->start_pg + io->nr_pages; pg++){
+        srand(time(NULL)+pg);
+        input_char = (rand() % 93) + 33;
         for(i = 0; i < pg_lines-1; i++) {
             switch (i) {
                 case 0:
@@ -849,7 +861,7 @@ static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_
                     memset(current, '|', 1);
                     memset(current+1, ' ', 23);
                     sprintf(current+24, "BLOCK ");
-                    sprintf(aux, "%d", blk_id);
+                    sprintf(aux, "%d", io->blk_id);
                     memcpy(current+30, aux, strlen(aux));
                     memset(current+30+strlen(aux), ' ', 23+9-strlen(aux));
                     memset(current+62, '|', 1);
@@ -871,7 +883,7 @@ static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_
                     break;
                 default:
                     memset(current, '|', 1);
-                    memset(current+1, '-', 61);
+                    memset(current+1, (char) input_char, 61);
                     memset(current+62, '|', 1); 
                     memset(current+63, '\n', 1);
                     current += 64;
@@ -884,9 +896,6 @@ static void write_prepare(char *buf, uint32_t pg_size, uint32_t n_pages, uint32_
         current += 64;
         written += 64; 
     }
-    memset(current-1, '\0', 1);
-
-    printf("\n Bytes processed: %u bytes\n",written);
 }
 
 static int io_prepare(struct nvm_io_info *io, struct nvm_dev_info *info)
@@ -896,12 +905,12 @@ static int io_prepare(struct nvm_io_info *io, struct nvm_dev_info *info)
     io->tgt_fd = nvm_target_open(io->tgt_name, 0x0);
     if (io->tgt_fd < 0) {
         printf("nvm_target_open error. Failed to open LightNVM target %s.\n",
-                                                                    io->tgt_name);
+                                                                io->tgt_name);
         return -1;
     } 
 
     ret = posix_memalign((void **)&io->buf_data, info->sec_size, 
-                                          info->pln_pg_size * info->pg_per_blk);
+                                          info->pln_pg_size * io->nr_pages + 1);
     if (ret) {
         printf("Could not allocate write/read aligned memory (%d,%d)\n",
                     info->sec_size, info->pln_pg_size);
@@ -909,19 +918,38 @@ static int io_prepare(struct nvm_io_info *io, struct nvm_dev_info *info)
     }
     
     io->bytes_trans = 0;
-    io->current_ppa = io->blk_id * info->pg_per_blk;  
-    io->left_pages = info->pg_per_blk;
+    io->current_ppa = io->blk_id * info->pg_per_blk + io->start_pg;  
+    io->left_pages = io->nr_pages;
 
     return 0;
 }
 
-static int lnvm_io (struct nvm_io_info *io, struct nvm_dev_info *info, uint8_t direction)
+static int lnvm_io (struct nvm_io_info *io, struct nvm_dev_info *info, 
+                                uint8_t direction, struct arguments *args)
 {   
     int ret;
-   
+
+    io->blk_id = args->io_blkid;
+    io->tgt_name = args->io_tgt;
+
     ret = get_dev_info(io->tgt_name, info);
     if (ret) {
         printf("nvm_dev_info error. Failed to get device info.\n");
+        goto clean;
+    }
+ 
+    io->start_pg = (args->io_flag & IOARGS) ? args->io_pgstart : 0;
+    io->nr_pages = (args->io_flag & IOARGP) ?
+                   args->io_nrpages : 
+                   (args->io_flag & IOARGS) ? 
+                            1 : info->pg_per_blk;
+
+    if ( io->nr_pages + io->start_pg > info->pg_per_blk )
+    {
+        printf(" IO out of bounds (last page in the block %d: %d, erroneous "
+                "page: %d)\n",io->blk_id, info->pg_per_blk-1, io->nr_pages-1
+                                                            + io->start_pg);
+        ret = 1;
         goto clean;
     }
 
@@ -930,26 +958,30 @@ static int lnvm_io (struct nvm_io_info *io, struct nvm_dev_info *info, uint8_t d
         goto clean;
   
     if(direction == WRITE)
-        write_prepare(io->buf_data, info->pln_pg_size, info->pg_per_blk, io->blk_id);
+        write_prepare(io, info, args->io_flag & IOARGV);
 
     while(io->left_pages > 0){
         //sleep(1);
 
-        io->buf_offset = io->buf_data + ( (info->pg_per_blk-io->left_pages) * info->pln_pg_size );
+        io->buf_offset = io->buf_data + ( ( io->nr_pages - io->left_pages ) 
+                                                    * info->pln_pg_size );
 
         ret = (direction)?pwrite(io->tgt_fd, io->buf_offset, info->pln_pg_size,
                                 io->current_ppa * info->sec_size):
                           pread(io->tgt_fd, io->buf_offset, info->pln_pg_size,
                                 io->current_ppa * info->sec_size);
-       // printf("  buf: %#018llx, current_ppa: %lu, offset: %lu\n", 
-       //     (long long unsigned int) io->buf_offset, io->current_ppa, io->current_ppa * info->sec_size);
+        //printf("  buf: %#018llx, current_ppa: %lu, offset: %lu\n", 
+        //    (long long unsigned int) io->buf_offset, io->current_ppa, 
+        //                                    io->current_ppa * info->sec_size);
         if (ret != info->pln_pg_size) {
-            printf("  Could not perform IO on page %d.\n", info->pg_per_blk-io->left_pages);
+            printf("  Could not perform IO on page %d.\n", 
+                                io->nr_pages - io->left_pages + io->start_pg);
+            ret = 1;
             goto clean;
         }
         io->bytes_trans += ret;
     
-       // printf("  Page %d succesfull.\n",info->pg_per_blk - io->left_pages);
+        //printf("  Page %d succesfull.\n",info->pg_per_blk - io->left_pages);
 
         io->current_ppa += info->pg_sec_ratio;
         io->left_pages--; 
@@ -967,46 +999,49 @@ static void lnvm_write(struct arguments *args)
     static struct nvm_io_info io;
     static struct nvm_dev_info info;
     
-    io.blk_id = args->write_blkid;
-    io.tgt_name = args->write_tgt;
- 
-    printf("\n ### LNVM FULL BLOCK WRITE ###\n");
-    printf("\n WRITING TO DEVICE...\n");
+    if (args->io_flag & IOARGV) {
+        printf("\n ### LNVM BLOCK WRITE ###\n");
+        printf("\n WRITING TO DEVICE...\n");
+    }
     
-    ret = lnvm_io(&io, &info, WRITE);
+    ret = lnvm_io(&io, &info, WRITE, args);
     if (ret)
         goto clean;
     
-    printf(" Full write of %d pages in block %d performed succesfully.\n", info.pg_per_blk, io.blk_id);
-    printf(" Total bytes written: %u bytes\n", io.bytes_trans);
-    printf("\n");
+    if (args->io_flag & IOARGV) {
+        printf(" Write of %d pages (%d:%d) in block %d performed succesfully.\n",
+            io.nr_pages, io.start_pg, io.start_pg + io.nr_pages-1, io.blk_id);
+        printf(" Total bytes written: %u bytes\n", io.bytes_trans);
+        printf("\n");
+    }
 
 clean:
     free(io.buf_data);
 }
 
 void static lnvm_read(struct arguments *args) 
-{
-    /* if args->read_pgid > 0, read individual page */
-     
+{     
     int ret;
     static struct nvm_io_info io;
     static struct nvm_dev_info info;
     
-    io.blk_id = args->read_blkid;
-    io.tgt_name = args->read_tgt;
- 
-    printf("\n ### LNVM FULL BLOCK READ ###\n");
-    printf("\n READING FROM DEVICE...\n");
+    if (args->io_flag & IOARGV) {
+        printf("\n ### LNVM BLOCK READ ###\n");
+        printf("\n READING FROM DEVICE...\n");
+    }
     
-    ret = lnvm_io(&io, &info, READ);
+    ret = lnvm_io(&io, &info, READ, args);
     if (ret)
         goto clean;
 
-    printf(" Full read of %d pages in block %d performed succesfully.\n", info.pg_per_blk, io.blk_id);
-    printf(" Total bytes read: %u bytes\n", io.bytes_trans);
-    printf("%s",io.buf_data);
-    printf("\n");
+    if (args->io_flag & IOARGV) {
+        printf(" Read of %d pages (%d:%d) in block %d performed succesfully.\n",
+            io.nr_pages, io.start_pg, io.start_pg + io.nr_pages-1, io.blk_id);
+        printf(" Total bytes read: %u bytes\n", io.bytes_trans);
+        memset(io.buf_data + info.pln_pg_size * io.nr_pages,'\0',1);
+        printf("%s",io.buf_data);
+        printf("\n");
+    }
 
 clean:
     free(io.buf_data);
