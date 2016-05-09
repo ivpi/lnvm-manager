@@ -1,15 +1,29 @@
-# lnvm-manager (LightNVM Administrator)
-A tool to manage LightNVM-enable devices, such as OpenChannel SSDs.
+# lnvm-manager (LightNVM Administrator and Tester)
+A tool to manage and test LightNVM-enable devices, such as OpenChannel SSDs.
 
-This software is based on 'lnvm' by Matias Bjørling:
+Features:
+   See information about LightNVM devices;
+   See available LightNVM target types in the kernel;
+   Create a target on top of a device and expose the namespace in /dev;
+   See info about the created target;
+   Delete a target and remove namespace from /dev;
+   Provisioning:
+      Get a block from a specific LUN and mark it as in-use;
+      Free a block (put) and mark it as free (it can be erased at any time);
+   Write/Read a full block in a specific LUN;
+   Write/Read an individual page within a block and specific LUN;
+   Write/Read a range of sequential pages within a block and specific LUN;
+   During IO operations (read/write) there is no output (use '-v' to see output)
+
+The previous version of this software is 'lnvm' by Matias Bjørling:
 
 <https://github.com/OpenChannelSSD/lnvm>
 
-The previous version of 'lnvm' has been developed to manage the devices using ioctl directly. The linux kernel has been modified in order to work with 'liblightnvm', a user-space library to access OpenChannel SSDs:
+The previous version of 'lnvm' has been developed to manage the devices using ioctl directly and does not perform IO operations. Now, the linux kernel has been modified in order to work with 'liblightnvm', an user-space library to access OpenChannel SSDs:
 
 <https://github.com/OpenChannelSSD/liblightnvm>
 
-This new version of 'lnvm' uses 'liblightnvm' and the new version of the kernel. The main difference in the new LightNVM is that now is possible to access device LUNs in parallel (get and put blocks from different Logical Units).
+lnvm-manager now uses 'liblightnvm' and the new version of the kernel. The main difference in the kernel is that now is possible to access LUNs in parallel (get/put and read/write blocks from different Logical Units).
 
 # How to use
 
@@ -30,12 +44,16 @@ $ make
 You need root privilegies in order to manage LightNVM devices.
 
 ```
-Available commands:
-   info    Show registered lightNVM target types
-   dev     Show registered lightNVM devices
-   new     Init a target on top of a device
-   rm      Remove a target from a device
-   tgt     Show info about an online target (created by 'new' command)
+ Available commands:
+   info            Show available lightNVM target types
+   dev             Show registered lightNVM devices
+   new             Init a target on top of a device
+   rm              Remove a target from a device
+   tgt             Show info about an online target (created by 'new' command)
+   getblock        Get a block from a specific LUN (mark as in-use)
+   putblock        Free a block (mark as free, it can be erased)
+   write           Write data to a block
+   read            Read data from a block
 ```
 
 # lnvm info
@@ -116,4 +134,105 @@ Examples:
    Target File: /dev/mydev
    Target Type: dflash (0,0,0)
    Device: nvme0n1
+```
+
+# lnvm getblock
+```
+   Options:
+    -l, --lun=LUN              LUN id. <int>
+    -n, --target=TARGET_NAME   Target name. e.g. 'mydev'
+   
+   Examples:
+    lnvm getblock -l 1 -n mydev
+    lnvm getblock -n mydev (without 'l' argument to pick a random LUN)
+    
+   ### LNVM GET BLOCK ###
+    A block has been succesfully allocated.
+    LUN: 1
+    Block ID: 1030
+    Block initial addr (bppa): 0x0000000000040600
+    Nr of ppas (pages): 256
+```
+
+# lnvm putblock
+```
+   Options:
+    -b, --blockid=BLOCK_ID     Block ID. <int>
+    -l, --lunid=LUN_ID         LUN ID. <int>
+    
+   Examples:
+    lnvm putblock -l 1 -b 1022 -n mydev
+    lnvm putblock -l 0 -b 5 -n mydev
+    
+   ### LNVM PUT BLOCK ###
+    Block 1022 from LUN 1 has been succesfully freed.
+```
+
+# lnvm write
+```
+We consider 256 pages per block for now (This info should come from kernel).
+Use this command to overwrite the whole block, to write an indidual page or a
+range of pages.
+Use 'v' to see information and output during read/write.
+
+ Full block: use only 'b' and 'n' keys
+ Individual page: use only 'b', 'n' and 's' keys or 'p' = 1
+ A range of pages: use all keys ('b','n','s' and 'p')
+
+ Options:
+  -b, --blockid=BLOCK_ID     Block ID. <int>
+  -n, --target=TARGET_NAME   Target name. e.g. 'mydev'
+  -p, --nr_pages=NUMBER_OF_PAGES   Number of pages to read
+  -s, --page_start=PAGE_START   Page start ID within the block
+  -v, --verbose              Print info and output to the screen
+  
+  Examples:
+   lnvm write -b 1022 -n mydev (full block write)
+   lnvm write -b 100 -s 10 -n mydev (individual page write)
+   lnvm write -b 75 -n mydev -s 5 -p 10 (range page write. From page 5 to 14)
+   lnvm write -b 1000 -n mydev -p 8 (range page write. From page 0 to 7)
+
+   lnvm write -n volt -b 1000 -s 10 -p 2 -v
+   
+   ### LNVM BLOCK WRITE ###
+   WRITING TO DEVICE...
+   Total to be written: 8192 bytes
+   Nr of pages: 2
+   Page Size: 4096 bytes
+   Write of 2 pages (10:11) in block 1000 performed succesfully.
+   Total written: 8192 bytes
+```
+
+# lnvm read
+```
+We consider 256 pages per block for now (This info should come from kernel).
+Use this command to read a full block, an invidual or a range of page.
+Use 'v' to see information and output during read/write.
+
+ Full block: use only 'b' and 'n' keys
+ Individual page: use only 'b', 'n' and 's' keys or 'p' = 1
+ A range of pages: use all keys ('b','n','s' and 'p')
+
+ Options:
+  -b, --blockid=BLOCK_ID     Block ID. <int>
+  -n, --target=TARGET_NAME   Target name. e.g. 'mydev'
+  -p, --nr_pages=NUMBER_OF_PAGES   Number of pages to read
+  -s, --page_start=PAGE_START   Page start ID within the block
+  -v, --verbose              Print info and output to the screen
+  
+  Examples:
+   lnvm read -b 50 -n mydev (full block read)
+   lnvm read -b 50 -s 10 -n mydev (individual page read)
+   lnvm read -b 50 -n mydev > output.file (full block read with output file)
+   lnvm read -b 50 -n mydev -s 5 -p 10 (range page read. From page 5 to 14)
+   lnvm read -b 50 -n mydev -p 8 (range page read. From page 0 to 7)
+   
+   lnvm read -n volt -b 1000 -s 10 -p 2 -v
+   
+   ### LNVM BLOCK READ ###
+    READING FROM DEVICE...
+    Read of 2 pages (10:11) in block 1000 performed succesfully.
+    Total read: 8192 bytes
+    
+    ############## READ OUTPUT ############### (use e.g  '> output.file' to write in a file)
 ```
