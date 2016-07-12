@@ -47,8 +47,7 @@ static int get_dev_info(char * tgt_name, struct nvm_dev_info *info)
     info->pln_pg_size = info->page_size * dev_prop->nr_planes;
     info->pg_sec_ratio = info->pln_pg_size / info->sec_size;
 
-    /* pg_per_blk should come from the kernel, we wait for this */
-    info->pg_per_blk = 256;
+    info->pg_per_blk = PGS_PER_BLK;
 out:
     return ret;
 }

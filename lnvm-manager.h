@@ -4,6 +4,9 @@
 #include <linux/types.h>
 #include <liblightnvm.h>
 
+/* pg_per_blk should come from the kernel, we wait for this */
+#define PGS_PER_BLK     512
+
 struct nvm_dev_info {
     uint32_t sec_size;
     uint32_t page_size;
